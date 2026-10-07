@@ -1,0 +1,1 @@
+// Graceful shutdown manager (SIGTERM draining)
