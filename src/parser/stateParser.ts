@@ -13,6 +13,7 @@ enum State {
   REQUEST_FINISHED = 'complete',
   BODY_FINISHED = 'body_complete',
 }
+export const postable = ['POST', 'PUT', 'PATCH', 'QUERY'];
 
 export type Header = Record<string, string>;
 const isAlphabetic = (str: string): boolean => /^[A-Za-z]+$/.test(str);
@@ -25,6 +26,7 @@ class Parser {
   private headerKey = '';
   private headerBuffer: Header[] = [];
   private bodyBuffer: Uint8Array[] = [];
+  private headlength: number = 0;
   private bodyLength: number = 0;
 
   public feed(bytes: Uint8Array) {
@@ -39,6 +41,7 @@ class Parser {
             this.state = State.PARSE_URL;
             this.currTokValue = '';
           } else this.currTokValue += currChar;
+          this.headlength++;
           break;
 
         case State.PARSE_URL:
@@ -47,10 +50,12 @@ class Parser {
             this.state = State.PARSE_VERSION;
             this.currTokValue = '';
           } else this.currTokValue += currChar;
+          this.headlength++;
           break;
 
         case State.PARSE_VERSION:
           if (currChar === '\r') {
+            this.headlength++;
             continue;
           }
           if (currChar === '\n') {
@@ -59,6 +64,7 @@ class Parser {
             this.state = State.PARSE_HEADER_KEY;
             this.currTokValue = '';
           } else this.currTokValue += currChar;
+          this.headlength++;
           break;
 
         case State.PARSE_HEADER_KEY:
@@ -67,10 +73,11 @@ class Parser {
             this.headerKey = this.currTokValue;
             this.currTokValue = '';
           } else this.currTokValue += currChar;
+          this.headlength++;
           break;
 
         case State.PARSE_HEADER_VALUE:
-          if (this.crlf.includes('\r\n\r\n')) {
+          if ((this.crlf + currChar).includes('\r\n\r\n')) {
             // this.crlf = '';
             this.headerBuffer.push({
               [this.headerKey]: this.currTokValue,
@@ -93,30 +100,46 @@ class Parser {
           } else {
             this.currTokValue += currChar;
           }
+          this.headlength++;
           break;
 
         case State.HEADER_DONE:
           // probbably get going on the whole body parsing
           this.state = State.PARSE_BODY;
+          i--;
           break;
 
         case State.PARSE_BODY:
+          const method = this.tokens['method'];
+          if (method === 'GET') {
+            this.state = State.BODY_FINISHED;
+            break;
+          }
+
           const contentLength = findHeader(
             this.tokens['headers'] as Header[],
             (h) => 'Content-Length' in h
           );
-          console.log(contentLength);
-          if (this.tokens['method'] === 'POST' && contentLength) {
-            // console.log(`the character is ${String.fromCharCode(bytes[i])}`);
+
+          if (method && postable.find((m) => m === method) && contentLength) {
             const ctLen = Number(contentLength['Content-Length']);
-            if (this.bodyLength <= ctLen) {
-              this.bodyBuffer.push(bytes);
-              this.bodyLength += bytes.length;
-            } else {
+            const bytesNeeded = ctLen - this.bodyLength;
+            const bytesAvailable = bytes.length - i;
+            const bytesToTake = Math.min(bytesNeeded, bytesAvailable);
+            if (bytesToTake > 0) {
+              const chunk = bytes.subarray(i, i + bytesToTake);
+              this.bodyBuffer.push(chunk);
+              this.bodyLength += chunk.length + 1;
+              i += chunk.length;
+            }
+            if (this.bodyLength >= ctLen) {
               this.state = State.BODY_FINISHED;
               this.tokens['body'] = Buffer.concat(this.bodyBuffer);
             }
+          } else {
+            this.state = State.BODY_FINISHED;
           }
+          break;
       }
     }
   }
